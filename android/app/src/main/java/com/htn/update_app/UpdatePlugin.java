@@ -4,9 +4,7 @@ package com.htn.update_app;
 import android.app.Activity;
 import android.content.Context;
 import android.util.Log;
-
 import java.util.Map;
-
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.EventChannel;
@@ -15,23 +13,24 @@ import io.flutter.plugin.common.PluginRegistry;
 public class UpdatePlugin implements FlutterPlugin, EventChannel.StreamHandler {
     //CONSTANTS
     private static final String ARG_URL = "url";
+    private static final String FILE_NAME = "file_name";
     public static final String TAG = "UpdatePlugin";
     //BASIC PLUGIN STATE
     private Context context;
     private Activity activity;
     private EventChannel.EventSink progressSink;
     private static String url = "";
+    private static String fileName = "";
 
 
-    private void initialize(Context context, BinaryMessenger messanger) {
-        final EventChannel progressChannel = new EventChannel(messanger, "foxconn.fii.app.update");
+    private void initialize(Context context, BinaryMessenger messenger) {
+        final EventChannel progressChannel = new EventChannel(messenger, "com.htn.update_app");
         progressChannel.setStreamHandler(this);
         this.context = context;
     }
 
 
     public static void registerWith(PluginRegistry.Registrar registrar) {
-        Log.d(TAG, "registerWith");
         UpdatePlugin plugin = new UpdatePlugin();
         plugin.initialize(registrar.context(), registrar.messenger());
         plugin.activity = registrar.activity();
@@ -40,26 +39,23 @@ public class UpdatePlugin implements FlutterPlugin, EventChannel.StreamHandler {
 
     @Override
     public void onAttachedToEngine(FlutterPluginBinding binding) {
-        Log.d(TAG, "onAttachedToEngine");
         initialize(binding.getApplicationContext(), binding.getBinaryMessenger());
     }
 
     @Override
     public void onDetachedFromEngine(FlutterPluginBinding binding) {
-        Log.d(TAG, "onDetachedFromEngine");
     }
 
-    //STREAM LISTENER
     @Override
     public void onListen(Object arguments, EventChannel.EventSink events) {
         if (progressSink != null) {
-            progressSink.error("" + Status.ALREADY_RUNNING_ERROR.ordinal(), "Method call was cancelled. One method call is already running!", null);
+            progressSink.error("" + Status.ALREADY_RUNNING_ERROR.ordinal(), Status.ALREADY_RUNNING_ERROR.name(), "Method call was cancelled. One method call is already running!");
         }
         Log.d(TAG, "STREAM OPENED");
         progressSink = events;
-        //READ URL FROM CALL
-        Map argumentsMap = ((Map) arguments);
+        Map argumentsMap = (Map) arguments;
         url = argumentsMap.get(ARG_URL).toString();
+        fileName = argumentsMap.get(FILE_NAME).toString();
 
         executeDownload();
     }
@@ -72,16 +68,8 @@ public class UpdatePlugin implements FlutterPlugin, EventChannel.StreamHandler {
     }
 
     private void executeDownload() {
-        //PREPARE URLS
-        new DownloadTask(context, progressSink).execute(url);
-    }
-
-
-    public enum Status {
-        DOWNLOADING,
-        DOWNLOAD_ERROR,
-        INSTALLING,
-        INSTALL_ERROR,
-        ALREADY_RUNNING_ERROR,
+        new DownloadManager(
+                context,
+                progressSink).execute(url, fileName);
     }
 }

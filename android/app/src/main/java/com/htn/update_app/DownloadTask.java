@@ -2,59 +2,38 @@ package com.htn.update_app;
 
 
 import android.content.Context;
-import android.content.Intent;
-import android.net.SSLCertificateSocketFactory;
-import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
-import android.os.PowerManager;
+import android.os.Environment;
 import android.util.Log;
-
-import androidx.core.content.FileProvider;
-
-import org.apache.http.conn.ssl.AllowAllHostnameVerifier;
-
+import androidx.annotation.RequiresApi;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Arrays;
 
 import javax.net.ssl.HttpsURLConnection;
 
-import io.flutter.plugin.common.EventChannel;
-
-
 public class DownloadTask extends AsyncTask<String, Integer, String> {
-    /**const*/
-    private static final String FILE_NAME = "update.apk";
+
+
     private static final String TAG = "DownloadTask";
-    private static int currentProgress = 0;
-
-    private EventChannel.EventSink progressSink;
-    private Context context;
-    private PowerManager.WakeLock mWakeLock;
-
+    private final OnProgress onProgress;
     private File file;
 
-    public DownloadTask(Context context, EventChannel.EventSink progressSink) {
-        this.context = context;
-        this.progressSink = progressSink;
-        currentProgress = 0;
+    public DownloadTask(OnProgress onProgress) {
+        this.onProgress = onProgress;
     }
 
     @Override
-    protected String doInBackground(String... sUrl) {
+    protected String doInBackground(String... strings) {
         InputStream input = null;
         OutputStream output = null;
         HttpsURLConnection connection = null;
-
-
         try {
-            file = new File(context.getCacheDir(), FILE_NAME);
+            file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), strings[1] + ".apk");
             if (file.exists()) {
                 if (!file.delete()) {
                     String error = "ERROR: unable to delete old apk file before starting OTA";
@@ -63,31 +42,34 @@ public class DownloadTask extends AsyncTask<String, Integer, String> {
                 }
             }
             if (!file.createNewFile()) {
-                    String error = "ERROR: unable to create apk file before starting OTA";
-                    Log.e(TAG, error);
-                    return error;
+                String error = "ERROR: unable to create apk file before starting OTA";
+                Log.e(TAG, error);
+                return error;
             }
             Log.d(TAG, "DOWNLOAD STARTING");
 
-            URL url = new URL(sUrl[0]);
+
+            HttpsTrustManager.allowAllSSL();
+            URL url = new URL(strings[0]);
             connection = (HttpsURLConnection) url.openConnection();
-            connection.setSSLSocketFactory(SSLCertificateSocketFactory.getInsecure(0, null));
-            connection.setHostnameVerifier(new AllowAllHostnameVerifier());
-            connection.setRequestProperty("Accept-Charset", "UTF-8");
-            connection.setConnectTimeout(60000);
             connection.connect();
 
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                String result = "Server returned HTTP " + connection.getResponseCode()
+            // expect HTTP 200 OK, so we don't mistakenly save error report
+            // instead of the file
+            if (connection.getResponseCode() != HttpsURLConnection.HTTP_OK) {
+                return "Server returned HTTP " + connection.getResponseCode()
                         + " " + connection.getResponseMessage();
-                return result;
             }
+
+            // this will be useful to display download percentage
+            // might be -1: server did not report the length
             int fileLength = connection.getContentLength();
 
+            // download the file
             input = connection.getInputStream();
             output = new FileOutputStream(file.toString());
 
-            byte data[] = new byte[4096];
+            byte[] data = new byte[4096];
             long total = 0;
             int count;
             while ((count = input.read(data)) != -1) {
@@ -98,19 +80,12 @@ public class DownloadTask extends AsyncTask<String, Integer, String> {
                 }
                 total += count;
                 // publishing the progress....
-                if (fileLength > 0){
-                    int progress = (int) (total * 100 / fileLength);
-                    if (progress!=currentProgress){
-                        currentProgress = progress;
-                        publishProgress(progress);
-                    }
-                }
+                if (fileLength > 0) // only if total length is known
+                    publishProgress((int) (total * 100 / fileLength));
                 output.write(data, 0, count);
             }
-            Log.e(TAG, "DOWNLOAD SUCCESS: " + file.toString());
         } catch (Exception e) {
-            Log.d(TAG, "DOWNLOAD FAIL: " + e.toString());
-            return e.getMessage();
+            return e.toString();
         } finally {
             try {
                 if (output != null)
@@ -129,59 +104,22 @@ public class DownloadTask extends AsyncTask<String, Integer, String> {
     @Override
     protected void onPreExecute() {
         super.onPreExecute();
-        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
-                getClass().getName());
-        mWakeLock.acquire();
+        onProgress.onStart();
     }
 
     @Override
     protected void onProgressUpdate(Integer... progress) {
         super.onProgressUpdate(progress);
-        progressSink.success(Arrays.asList("" + UpdatePlugin.Status.DOWNLOADING.ordinal(), "" + progress[0]));
-
+        onProgress.onDownloading(progress[0]);
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
     protected void onPostExecute(String result) {
-        mWakeLock.release();
-
-        if (result==null){
-            if (!file.exists()) {
-                if (progressSink != null) {
-                    progressSink.error("" + UpdatePlugin.Status.DOWNLOAD_ERROR.ordinal(), "File was not downloaded", null);
-                    progressSink.endOfStream();
-                    progressSink = null;
-                }
-                return;
-            }
-            executeInstallation(file);
-        }else {
-            progressSink.error("" + UpdatePlugin.Status.DOWNLOAD_ERROR.ordinal(), result, null);
-        }
-    }
-
-
-    private void executeInstallation(File downloadedFile) {
-        Intent intent;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            Uri apkUri = FileProvider.getUriForFile(context, context.getPackageName() + ".ota_update_provider", downloadedFile);
-            intent = new Intent(Intent.ACTION_INSTALL_PACKAGE);
-            intent.setData(apkUri);
-            intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (result != null || !file.exists()) {
+            onProgress.onError("ERROR: Download error: " + result);
         } else {
-            intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(Uri.fromFile(file), "application/vnd.android.package-archive");
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        }
-        //SEND INSTALLING EVENT
-        if (progressSink != null) {
-            context.startActivity(intent);
-            progressSink.success(Arrays.asList("" + UpdatePlugin.Status.INSTALLING.ordinal(), ""));
-            progressSink.endOfStream();
-            progressSink = null;
+            onProgress.onSuccess(file);
         }
     }
-
 }
